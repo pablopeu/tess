@@ -1,129 +1,173 @@
 import {
   type Vec2, type EdgeDef, type FundamentalRegion,
-  vec2, add, sub, len, cross2,
+  sub, dot, distToSegment,
 } from './types';
 
-// ─── Constantes ────────────────────────────────────────────────────
-
-const TOLERANCE = 0.01; // para comparaciones de paralelismo
-
-// ─── Resultado de verificación de teselabilidad ────────────────────
-
-export interface TileabilityResult {
-  tileable: boolean;
-  reason?: string;
-  region?: FundamentalRegion;
-}
-
-// ─── Verificación de paralelogramo ────────────────────────────────
-
-function areParallel(a: Vec2, b: Vec2): boolean {
-  return Math.abs(cross2(a, b)) < TOLERANCE * len(a) * len(b);
-}
-
-function areParallelAndEqual(a: Vec2, b: Vec2): boolean {
-  return areParallel(a, b) && Math.abs(len(a) - len(b)) < TOLERANCE * (len(a) + len(b)) / 2;
-}
-
-// ─── Construcción de región fundamental ───────────────────────────
+// ─── Construcción genérica de región fundamental p1 ──────────────
 
 /**
- * Convierte un triángulo (3 puntos) en el paralelogramo que
- * forma la región fundamental p1.
- *
- * Dados A, B, C (en orden), el cuarto vértice del paralelogramo
- * es D = B + C - A. El orden es A → B → D → C.
+ * Construye una región fundamental p1 desde una lista de vértices.
+ * Con 3 vértices: completa el 4º como D = A + C - B (paralelogramo).
+ * Con N pares: asume que es un paralelógeno con N/2 pares de bordes opuestos.
+ * Con N impar: error (no teselable en p1).
  */
-function triangleToParallelogram(pts: Vec2[]): Vec2[] {
-  const A = pts[0];
-  const B = pts[1];
-  const C = pts[2];
-  const D = add(add(B, C), vec2(-A.x, -A.y)); // B + C - A
-  return [A, B, D, C];
+export function buildP1Region(pts: Vec2[]): FundamentalRegion | null {
+  const n = pts.length;
+
+  if (n === 3) {
+    // Triángulo → paralelogramo D = A + C - B
+    const D = { x: pts[0].x + pts[2].x - pts[1].x, y: pts[0].y + pts[2].y - pts[1].y };
+    const verts = [pts[0], pts[1], D, pts[2]];
+    return buildP1FromVerts(verts, true);
+  }
+
+  if (n % 2 !== 0) return null; // impar → no teselable
+
+  return buildP1FromVerts(pts, false);
 }
 
-/**
- * Verifica si los puntos dados forman una figura teselable
- * y devuelve la región fundamental correspondiente.
- */
-export function checkTileability(pts: Vec2[]): TileabilityResult {
-  if (pts.length < 3) {
-    return { tileable: false, reason: 'Se necesitan al menos 3 puntos' };
-  }
+function buildP1FromVerts(verts: Vec2[], isTriangle: boolean): FundamentalRegion {
+  const n = verts.length;
+  const halfN = n / 2;
 
-  if (pts.length === 3) {
-    // Todo triángulo tesela el plano (formando un paralelogramo con su reflejo)
-    const paraVerts = triangleToParallelogram(pts);
-    const region = buildParallelogramRegion(paraVerts, true);
-    return { tileable: true, region };
-  }
-
-  if (pts.length === 4) {
-    // Verificar si es un paralelogramo
-    const e0 = sub(pts[1], pts[0]);
-    const e2 = sub(pts[2], pts[3]);
-    const e1 = sub(pts[2], pts[1]);
-    const e3 = sub(pts[0], pts[3]);
-
-    if (!areParallelAndEqual(e0, e2)) {
-      return {
-        tileable: false,
-        reason: 'Los lados opuestos deben ser paralelos y de igual longitud',
-      };
-    }
-    if (!areParallelAndEqual(e1, e3)) {
-      return {
-        tileable: false,
-        reason: 'Los lados opuestos deben ser paralelos y de igual longitud',
-      };
-    }
-
-    const region = buildParallelogramRegion(pts);
-    return { tileable: true, region };
-  }
-
-  return {
-    tileable: false,
-    reason: 'Se requieren 3 (triángulo) o 4 (paralelogramo) puntos',
-  };
-}
-
-function buildParallelogramRegion(verts: Vec2[], isTriangle = false): FundamentalRegion {
-  // verts debe ser [v0, v1, v2, v3] en orden cíclico
+  // Vectores de traslación del paralelogramo base
+  // u = v[1] - v[0], v = v[n-1] - v[0]
   const u = sub(verts[1], verts[0]);
-  const v = sub(verts[3], verts[0]);
+  const v = sub(verts[n - 1], verts[0]);
 
-  // Emparejamientos: edge 0 ↔ edge 2, edge 1 ↔ edge 3
-  const edges: EdgeDef[] = [
-    { id: 'e0', start: 0, end: 1, pairId: 'e2' },
-    { id: 'e1', start: 1, end: 2, pairId: 'e3' },
-    { id: 'e2', start: 2, end: 3, pairId: 'e0' },
-    { id: 'e3', start: 3, end: 0, pairId: 'e1' },
-  ];
+  // Crear N bordes con emparejamiento i ↔ (i + halfN) % n
+  const edges: EdgeDef[] = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const pair = (i + halfN) % n;
+    edges.push({
+      id: `e${i}`,
+      start: i,
+      end: j,
+      pairId: `e${pair}`,
+    });
+  }
 
   return { vertices: verts, edges, u, v, isTriangle };
 }
 
-// ─── Mutación de vértices (manteniendo paralelogramo) ─────────────
+// ─── Encontrar borde más cercano ──────────────────────────────────
 
-const OPPOSITE_MAP: Record<number, number> = { 0: 2, 1: 3, 2: 0, 3: 1 };
+interface EdgeHit {
+  edgeIdx: number;     // índice del borde en la región
+  t: number;           // parámetro [0,1] a lo largo del borde
+  dist: number;        // distancia al borde
+}
 
 /**
- * Mueve un vértice manteniendo la estructura de paralelogramo.
+ * Encuentra a qué borde del polígono está más cerca `pos`,
+ * devolviendo el índice y la fracción t.
+ */
+export function findNearestEdge(verts: Vec2[], pos: Vec2, threshold = 30): EdgeHit | null {
+  let best: EdgeHit | null = null;
+
+  for (let i = 0; i < verts.length; i++) {
+    const a = verts[i];
+    const b = verts[(i + 1) % verts.length];
+    const d = distToSegment(pos, a, b);
+
+    if (d < threshold && (!best || d < best.dist)) {
+      // Calcular t
+      const ab = sub(b, a);
+      const abLen2 = dot(ab, ab);
+      let t = 0;
+      if (abLen2 > 0) {
+        t = dot(sub(pos, a), ab) / abLen2;
+        t = Math.max(0.1, Math.min(0.9, t)); // evitar extremos
+      }
+      best = { edgeIdx: i, t, dist: d };
+    }
+  }
+
+  return best;
+}
+
+// ─── Subdividir borde ────────────────────────────────────────────
+
+/**
+ * Agrega un vértice subdividiendo el borde en `edgeIdx` y su
+ * borde opuesto, en la fracción t.
+ *
+ * verts: los vértices actuales del polígono.
+ * edgeIdx: índice del borde a subdividir (en el orden del polígono).
+ * t: fracción [0, 1].
+ *
+ * Devuelve: nuevo array de vértices con 2 vértices insertados.
+ */
+export function subdivideEdge(
+  verts: Vec2[],
+  edgeIdx: number,
+  t: number,
+  pos: Vec2,
+): Vec2[] {
+  const n = verts.length;
+  const halfN = n / 2;
+  const oppositeEdgeIdx = (edgeIdx + halfN) % n;
+
+  // Crear el nuevo vértice para edgeIdx (usar pos)
+  const newV1 = pos;
+
+  // Crear el vértice para el borde opuesto en la misma fracción t
+  const oppA = verts[oppositeEdgeIdx];
+  const oppB = verts[(oppositeEdgeIdx + 1) % n];
+  const newV2 = {
+    x: oppA.x + (oppB.x - oppA.x) * t,
+    y: oppA.y + (oppB.y - oppA.y) * t,
+  };
+
+  // Insertar en orden
+  // edgeIdx: insertar después de edgeIdx
+  // oppositeEdgeIdx: insertar después de oppositeEdgeIdx
+  // Pero al insertar uno, los índices cambian. Insertamos del más grande al más chico.
+
+  const result = [...verts];
+  const insert1 = Math.max(edgeIdx, oppositeEdgeIdx);
+  const insert2 = Math.min(edgeIdx, oppositeEdgeIdx);
+
+  result.splice(insert1 + 1, 0, newV1);  // insertar después de edgeIdx
+  result.splice(insert2 + 1, 0, newV2);  // insertar después de oppositeEdgeIdx
+
+  return result;
+}
+
+// ─── Mutación de vértices (manteniendo estructura) ────────────────
+
+/**
+ * Mueve un vértice. Si es un paralelogramo simple (4 vértices),
+ * mueve el opuesto en espejo. Si tiene más vértices, mueve solo
+ * ese vértice pero ajusta el opuesto para mantener bordes paralelos.
  */
 export function moveVertex(region: FundamentalRegion, idx: number, delta: Vec2): void {
-  const opp = OPPOSITE_MAP[idx];
-  if (opp === undefined) return;
+  const verts = region.vertices;
+  const n = verts.length;
 
-  region.vertices[idx] = add(region.vertices[idx], delta);
-  region.vertices[opp] = sub(region.vertices[opp], delta);
+  if (n === 4) {
+    // Paralelogramo simple: mover opuesto en espejo
+    const opp = [2, 3, 0, 1][idx];
+    verts[idx] = { x: verts[idx].x + delta.x, y: verts[idx].y + delta.y };
+    verts[opp] = { x: verts[opp].x - delta.x, y: verts[opp].y - delta.y };
+    region.u = sub(verts[1], verts[0]);
+    region.v = sub(verts[3], verts[0]);
+    return;
+  }
 
-  // Recalcular vectores de traslación
-  region.u = sub(region.vertices[1], region.vertices[0]);
-  region.v = sub(region.vertices[3], region.vertices[0]);
+  // N vértices: mover el vértice y su opuesto paralelo
+  const halfN = n / 2;
+  const opp = (idx + halfN) % n;
+
+  verts[idx] = { x: verts[idx].x + delta.x, y: verts[idx].y + delta.y };
+  verts[opp] = { x: verts[opp].x + delta.x, y: verts[opp].y + delta.y };
+
+  // Recalcular u, v desde los primeros bordes
+  region.u = sub(verts[1], verts[0]);
+  region.v = sub(verts[n - 1], verts[0]);
 }
 
 // ─── Reset ────────────────────────────────────────────────────────
 
-export function resetRegion(): void {
-}
+export function resetRegion(): void {}
