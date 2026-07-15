@@ -36,9 +36,9 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
-/** D = B + C - A, el 4º vértice del paralelogramo */
+/** D = A + C - B, 4º vértice para un paralelogramo [A, B, C, D] */
 function parallelogramD(A: Vec2, B: Vec2, C: Vec2): Vec2 {
-  return { x: B.x + C.x - A.x, y: B.y + C.y - A.y };
+  return { x: A.x + C.x - B.x, y: A.y + C.y - B.y };
 }
 
 export class Editor {
