@@ -53,7 +53,7 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
 
   const v = region.vertices;
   const triVerts = region.isTriangle
-    ? [v[0], v[1], v[3]]
+    ? [v[0], v[1], v[2]]
     : null;
 
   for (let row = startRow; row < endRow; row++) {
@@ -64,13 +64,12 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
       );
 
       if (triVerts) {
-        // Modo triángulo: derivar de los vértices actuales del paralelogramo
         const A = add(triVerts[0], offset);
         const B = add(triVerts[1], offset);
         const C = add(triVerts[2], offset);
-        const D = add(v[2], offset); // cuarto vértice del paralelogramo
+        const D = add(v[3], offset); // D = A + C - B
 
-        // Triángulo primario (el del usuario) — v0→v1→v3
+        // Triángulo primario A→B→C
         polygons.push({
           pathD: `M ${A.x} ${A.y} L ${B.x} ${B.y} L ${C.x} ${C.y} Z`,
           isPrimary: true,
@@ -78,9 +77,9 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
           cellRow: row,
         });
 
-        // Triángulo secundario (el reflejo) — v1→v2→v3
+        // Triángulo secundario A→C→D
         polygons.push({
-          pathD: `M ${B.x} ${B.y} L ${D.x} ${D.y} L ${C.x} ${C.y} Z`,
+          pathD: `M ${A.x} ${A.y} L ${C.x} ${C.y} L ${D.x} ${D.y} Z`,
           isPrimary: false,
           cellCol: col,
           cellRow: row,
@@ -89,8 +88,8 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
         vertices.push(
           { pos: A, sourceVertexIdx: 0, cellCol: col, cellRow: row },
           { pos: B, sourceVertexIdx: 1, cellCol: col, cellRow: row },
-          { pos: D, sourceVertexIdx: 2, cellCol: col, cellRow: row },
-          { pos: C, sourceVertexIdx: 3, cellCol: col, cellRow: row },
+          { pos: C, sourceVertexIdx: 2, cellCol: col, cellRow: row },
+          { pos: D, sourceVertexIdx: 3, cellCol: col, cellRow: row },
         );
       } else {
         // Modo paralelogramo

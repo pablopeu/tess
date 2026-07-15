@@ -15,9 +15,9 @@ export function buildP1Region(pts: Vec2[]): FundamentalRegion | null {
   const n = pts.length;
 
   if (n === 3) {
-    // Triángulo → paralelogramo D = A + C - B
+    // Triángulo → paralelogramo [A, B, C, D] con D = A + C - B
     const D = { x: pts[0].x + pts[2].x - pts[1].x, y: pts[0].y + pts[2].y - pts[1].y };
-    const verts = [pts[0], pts[1], D, pts[2]];
+    const verts = [pts[0], pts[1], pts[2], D];
     return buildP1FromVerts(verts, true);
   }
 
@@ -120,17 +120,15 @@ export function subdivideEdge(
     y: oppA.y + (oppB.y - oppA.y) * t,
   };
 
-  // Insertar en orden
-  // edgeIdx: insertar después de edgeIdx
-  // oppositeEdgeIdx: insertar después de oppositeEdgeIdx
-  // Pero al insertar uno, los índices cambian. Insertamos del más grande al más chico.
-
+  // Insertar del índice más grande al más chico para no desplazar
   const result = [...verts];
-  const insert1 = Math.max(edgeIdx, oppositeEdgeIdx);
-  const insert2 = Math.min(edgeIdx, oppositeEdgeIdx);
-
-  result.splice(insert1 + 1, 0, newV1);  // insertar después de edgeIdx
-  result.splice(insert2 + 1, 0, newV2);  // insertar después de oppositeEdgeIdx
+  if (edgeIdx > oppositeEdgeIdx) {
+    result.splice(edgeIdx + 1, 0, newV1);
+    result.splice(oppositeEdgeIdx + 1, 0, newV2);
+  } else {
+    result.splice(oppositeEdgeIdx + 1, 0, newV2);
+    result.splice(edgeIdx + 1, 0, newV1);
+  }
 
   return result;
 }
