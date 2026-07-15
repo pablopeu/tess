@@ -15,12 +15,18 @@ import {
 
 type Phase = 'building' | 'editing';
 
+interface DragInfo {
+  kind: 'building-point' | 'tile-vertex';
+  idx: number;
+  lastMouse: Vec2;
+}
+
 interface EditorState {
   phase: Phase;
   points: Vec2[];              // puntos clickeados por el usuario
   region: FundamentalRegion | null;
   tiling: TilingData;
-  dragging: { vertexIdx: number; lastMouse: Vec2 } | null;
+  dragging: DragInfo | null;
   tileabilityMsg: string;
 }
 
@@ -60,17 +66,36 @@ export class Editor {
     return vec2(r.width / 2, r.height / 2);
   }
 
-  /** De coordenadas de página a coordenadas de región. */
   private pageToRegion(clientX: number, clientY: number): Vec2 {
     const ctm = this.svg.getScreenCTM();
     if (ctm) {
-      // DOMPoint con coordenadas absolutas de pantalla → CTM inversa → SVG user space
       const pt = new DOMPoint(clientX, clientY);
       const userPt = pt.matrixTransform(ctm.inverse());
       const c = this.center();
       return vec2(userPt.x - c.x, userPt.y - c.y);
     }
     return vec2(0, 0);
+  }
+
+  // ─── Re-validar teselabilidad desde los building points ─────────
+
+  private recheckTileability(): void {
+    const pts = this.state.points;
+    if (pts.length >= 3) {
+      const result = checkTileability(pts);
+      if (result.tileable && result.region) {
+        this.state.region = result.region;
+        this.state.tiling = generateP1Tiling(result.region);
+        this.state.tileabilityMsg = `¡Teselable! (${pts.length} vértices) — clic derecho para finalizar`;
+        return;
+      }
+    }
+    // No tileable: limpiar región para no mostrar teselado viejo
+    this.state.region = null;
+    this.state.tiling = { polygons: [], vertices: [] };
+    if (pts.length >= 3) {
+      this.state.tileabilityMsg = 'No teselable — arrastra los puntos para ajustar';
+    }
   }
 
   // ─── Render ───────────────────────────────────────────────────
@@ -95,59 +120,56 @@ export class Editor {
     g.setAttribute('transform', `translate(${c.x}, ${c.y})`);
     this.svg.appendChild(g);
 
-    // ── Teselación (si existe) ──
-    for (const poly of this.state.tiling.polygons) {
-      const el = document.createElementNS(SVG_NS, 'path');
-      el.setAttribute('d', poly.pathD);
-      if (poly.isPrimary) {
-        el.setAttribute('class', 'cell');
-      } else {
-        // Triángulo reflejado: menos opaco
-        el.setAttribute('class', 'cell cell-mirror');
+    // ── Teselación (solo si hay región válida) ──
+    if (this.state.region) {
+      for (const poly of this.state.tiling.polygons) {
+        const el = document.createElementNS(SVG_NS, 'path');
+        el.setAttribute('d', poly.pathD);
+        el.setAttribute('class', poly.isPrimary ? 'cell' : 'cell cell-mirror');
+        g.appendChild(el);
       }
-      g.appendChild(el);
+
+      // Vértices de la teselación (solo celda central en editing)
+      if (this.state.phase === 'editing') {
+        for (const v of this.state.tiling.vertices) {
+          if (v.cellCol === 0 && v.cellRow === 0) {
+            const circle = document.createElementNS(SVG_NS, 'circle');
+            circle.setAttribute('cx', String(v.pos.x));
+            circle.setAttribute('cy', String(v.pos.y));
+            circle.setAttribute('r', '5');
+            circle.setAttribute('class', 'vertex-handle');
+            circle.dataset.vidx = String(v.sourceVertexIdx);
+            g.appendChild(circle);
+          }
+        }
+      }
     }
 
-    // ── Vértices de la teselación ──
-    for (const v of this.state.tiling.vertices) {
-      const circle = document.createElementNS(SVG_NS, 'circle');
-      circle.setAttribute('cx', String(v.pos.x));
-      circle.setAttribute('cy', String(v.pos.y));
-      circle.setAttribute('r', '5');
-      // Solo los de la celda central son interactuables
-      if (v.cellCol === 0 && v.cellRow === 0) {
-        circle.setAttribute('class', 'vertex-handle');
-        circle.dataset.vidx = String(v.sourceVertexIdx);
-      } else {
-        circle.setAttribute('class', 'vertex-inactive');
-      }
-      g.appendChild(circle);
-    }
-
-    // ── Puntos en construcción (building phase) ──
-    if (this.state.phase === 'building') {
+    // ── Puntos en construcción (siempre en building) ──
+    if (this.state.phase === 'building' && this.state.points.length > 0) {
       const pts = this.state.points;
+      const tileable = this.state.region !== null;
 
       // Líneas de construcción
       for (let i = 0; i < pts.length; i++) {
         const j = (i + 1) % pts.length;
-
         const line = document.createElementNS(SVG_NS, 'line');
         line.setAttribute('x1', String(pts[i].x));
         line.setAttribute('y1', String(pts[i].y));
         line.setAttribute('x2', String(pts[j].x));
         line.setAttribute('y2', String(pts[j].y));
-        line.setAttribute('class', 'build-line');
+        line.setAttribute('class', tileable ? 'build-line' : 'build-line build-line-invalid');
         g.appendChild(line);
       }
 
-      // Círculos en cada punto
+      // Círculos en cada punto (todos arrastrables)
       for (let i = 0; i < pts.length; i++) {
         const circle = document.createElementNS(SVG_NS, 'circle');
         circle.setAttribute('cx', String(pts[i].x));
         circle.setAttribute('cy', String(pts[i].y));
         circle.setAttribute('r', '6');
-        circle.setAttribute('class', pts.length >= 3 && i < 3 ? 'vertex-handle' : 'vertex-build');
+        circle.setAttribute('class', 'vertex-build');
+        circle.dataset.ptidx = String(i);
         g.appendChild(circle);
       }
 
@@ -162,19 +184,13 @@ export class Editor {
       }
     }
 
-    // ── Estado ──
     this.updateStatus();
   }
 
   private updateStatus(): void {
     const el = document.getElementById('status');
     if (!el) return;
-
-    if (this.state.phase === 'building') {
-      el.textContent = this.state.tileabilityMsg;
-    } else {
-      el.textContent = 'Arrastra los vértices para deformar la teselación';
-    }
+    el.textContent = this.state.tileabilityMsg;
   }
 
   // ─── Eventos ─────────────────────────────────────────────────
@@ -186,10 +202,18 @@ export class Editor {
     this.svg.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
+  private hitBuildPoint(pos: Vec2): number | null {
+    const pts = this.state.points;
+    const RADIUS = 14;
+    for (let i = 0; i < pts.length; i++) {
+      if (dist(pos, pts[i]) < RADIUS) return i;
+    }
+    return null;
+  }
+
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button === 2) {
-      // Botón derecho → finalizar construcción
-      if (this.state.phase === 'building' && this.state.points.length >= 3) {
+      if (this.state.phase === 'building' && this.state.region) {
         this.finalizeBuilding();
       }
       return;
@@ -199,15 +223,23 @@ export class Editor {
     const pos = this.pageToRegion(e.clientX, e.clientY);
 
     if (this.state.phase === 'building') {
+      // Intentar arrastrar un punto existente
+      const hitIdx = this.hitBuildPoint(pos);
+      if (hitIdx !== null) {
+        this.state.dragging = { kind: 'building-point', idx: hitIdx, lastMouse: pos };
+        e.preventDefault();
+        return;
+      }
+      // Si no, agregar un nuevo punto
       this.handleBuildClick(pos);
       return;
     }
 
-    // Editing: hit test para drag de vértice
+    // Editing: arrastrar vértice de la teselación
     if (this.state.region) {
       const hit = hitTest(this.state.tiling, pos);
       if (hit && hit.kind === 'vertex') {
-        this.state.dragging = { vertexIdx: hit.sourceVertexIdx, lastMouse: pos };
+        this.state.dragging = { kind: 'tile-vertex', idx: hit.sourceVertexIdx, lastMouse: pos };
         e.preventDefault();
       }
     }
@@ -216,50 +248,39 @@ export class Editor {
   private handleBuildClick(pos: Vec2): void {
     const pts = this.state.points;
 
-    // Evitar puntos demasiado cercanos
     if (pts.length > 0 && dist(pos, pts[pts.length - 1]) < 10) return;
 
     pts.push(pos);
-
-    if (pts.length >= 3) {
-      const result = checkTileability(pts);
-      if (result.tileable && result.region) {
-        this.state.region = result.region;
-        this.state.tiling = generateP1Tiling(result.region);
-        this.state.tileabilityMsg = `¡Teselable! (${pts.length} vértices) — clic derecho para finalizar`;
-      } else {
-        this.state.tileabilityMsg = result.reason || 'No teselable';
-      }
-    } else {
-      this.state.tileabilityMsg = `Punto ${pts.length} — sigue agregando vértices`;
-    }
-
+    this.recheckTileability();
     this.scheduleRender();
   }
 
   private finalizeBuilding(): void {
-    if (!this.state.region) {
-      // Si no hay región teselable, no podemos finalizar
-      return;
-    }
+    if (!this.state.region) return;
     this.state.phase = 'editing';
-    this.state.tileabilityMsg = '';
+    this.state.tileabilityMsg = 'Arrastra los vértices para deformar la teselación';
     this.scheduleRender();
   }
 
   private onPointerMove = (e: PointerEvent): void => {
-    if (!this.state.dragging) return;
     const pos = this.pageToRegion(e.clientX, e.clientY);
     const drag = this.state.dragging;
-    const region = this.state.region;
-    if (!region) return;
+    if (!drag) return;
 
     const delta = sub(pos, drag.lastMouse);
     if (Math.abs(delta.x) < 0.5 && Math.abs(delta.y) < 0.5) return;
 
-    moveVertex(region, drag.vertexIdx, delta);
-    drag.lastMouse = pos;
-    this.scheduleRender();
+    if (drag.kind === 'building-point') {
+      // Arrastrar un punto en construcción
+      this.state.points[drag.idx] = pos;
+      this.recheckTileability();
+      drag.lastMouse = pos;
+      this.scheduleRender();
+    } else if (drag.kind === 'tile-vertex' && this.state.region) {
+      moveVertex(this.state.region, drag.idx, delta);
+      drag.lastMouse = pos;
+      this.scheduleRender();
+    }
   };
 
   private onPointerUp = (): void => {
