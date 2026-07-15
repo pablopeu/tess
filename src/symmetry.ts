@@ -89,6 +89,7 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
         vertices.push(
           { pos: A, sourceVertexIdx: 0, cellCol: col, cellRow: row },
           { pos: B, sourceVertexIdx: 1, cellCol: col, cellRow: row },
+          { pos: D, sourceVertexIdx: 2, cellCol: col, cellRow: row },
           { pos: C, sourceVertexIdx: 3, cellCol: col, cellRow: row },
         );
       } else {

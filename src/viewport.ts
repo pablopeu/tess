@@ -62,17 +62,15 @@ export class Editor {
 
   /** De coordenadas de página a coordenadas de región. */
   private pageToRegion(clientX: number, clientY: number): Vec2 {
-    const rect = this.svg.getBoundingClientRect();
-    const pt = this.svg.createSVGPoint();
-    pt.x = clientX - rect.left;
-    pt.y = clientY - rect.top;
     const ctm = this.svg.getScreenCTM();
     if (ctm) {
-      const root = pt.matrixTransform(ctm.inverse());
+      // DOMPoint con coordenadas absolutas de pantalla → CTM inversa → SVG user space
+      const pt = new DOMPoint(clientX, clientY);
+      const userPt = pt.matrixTransform(ctm.inverse());
       const c = this.center();
-      return vec2(root.x - c.x, root.y - c.y);
+      return vec2(userPt.x - c.x, userPt.y - c.y);
     }
-    return vec2(pt.x, pt.y);
+    return vec2(0, 0);
   }
 
   // ─── Render ───────────────────────────────────────────────────
