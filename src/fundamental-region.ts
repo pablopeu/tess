@@ -1,174 +1,129 @@
 import {
-  type Vec2, type EdgeId, type EdgeDef, type Transform,
-  type FundamentalRegion,
-  vec2, add, sub, curveLine,
+  type Vec2, type EdgeDef, type FundamentalRegion,
+  vec2, add, sub, len, cross2,
 } from './types';
 
-// ─── Fábrica: modo Rectangular (p1) ───────────────────────────────
+// ─── Constantes ────────────────────────────────────────────────────
 
-const EDGE_TOP    = 'top' as EdgeId;
-const EDGE_RIGHT  = 'right' as EdgeId;
-const EDGE_BOTTOM = 'bottom' as EdgeId;
-const EDGE_LEFT   = 'left' as EdgeId;
+const TOLERANCE = 0.01; // para comparaciones de paralelismo
 
-interface RectOpts {
-  cx?: number;
-  cy?: number;
-  width?: number;
-  height?: number;
+// ─── Resultado de verificación de teselabilidad ────────────────────
+
+export interface TileabilityResult {
+  tileable: boolean;
+  reason?: string;
+  region?: FundamentalRegion;
 }
 
-export function createRectangularRegion(opts: RectOpts = {}): FundamentalRegion {
-  const w = opts.width ?? 400;
-  const h = opts.height ?? 300;
-  const cx = opts.cx ?? 0;
-  const cy = opts.cy ?? 0;
+// ─── Verificación de paralelogramo ────────────────────────────────
 
-  const halfW = w / 2;
-  const halfH = h / 2;
+function areParallel(a: Vec2, b: Vec2): boolean {
+  return Math.abs(cross2(a, b)) < TOLERANCE * len(a) * len(b);
+}
 
-  // Vértices centrados en (cx, cy)
-  const v0 = vec2(cx - halfW, cy - halfH); // top-left
-  const v1 = vec2(cx + halfW, cy - halfH); // top-right
-  const v2 = vec2(cx + halfW, cy + halfH); // bottom-right
-  const v3 = vec2(cx - halfW, cy + halfH); // bottom-left
+function areParallelAndEqual(a: Vec2, b: Vec2): boolean {
+  return areParallel(a, b) && Math.abs(len(a) - len(b)) < TOLERANCE * (len(a) + len(b)) / 2;
+}
 
-  const u = vec2(w, 0);   // traslación horizontal
-  const v = vec2(0, h);   // traslación vertical
+// ─── Construcción de región fundamental ───────────────────────────
 
-  // Emparejamientos:
-  //   top  ↔ bottom :  translate(0, h)
-  //   left ↔ right  :  translate(w, 0)
+/**
+ * Convierte un triángulo (3 puntos) en el paralelogramo que
+ * forma la región fundamental p1.
+ *
+ * Dados A, B, C (en orden), el cuarto vértice del paralelogramo
+ * es D = B + C - A. El orden es A → B → D → C.
+ */
+function triangleToParallelogram(pts: Vec2[]): Vec2[] {
+  const A = pts[0];
+  const B = pts[1];
+  const C = pts[2];
+  const D = add(add(B, C), vec2(-A.x, -A.y)); // B + C - A
+  return [A, B, D, C];
+}
+
+/**
+ * Verifica si los puntos dados forman una figura teselable
+ * y devuelve la región fundamental correspondiente.
+ */
+export function checkTileability(pts: Vec2[]): TileabilityResult {
+  if (pts.length < 3) {
+    return { tileable: false, reason: 'Se necesitan al menos 3 puntos' };
+  }
+
+  if (pts.length === 3) {
+    // Todo triángulo tesela el plano (formando un paralelogramo con su reflejo)
+    const paraVerts = triangleToParallelogram(pts);
+    const region = buildParallelogramRegion(paraVerts, true);
+    return { tileable: true, region };
+  }
+
+  if (pts.length === 4) {
+    // Verificar si es un paralelogramo
+    const e0 = sub(pts[1], pts[0]);
+    const e2 = sub(pts[2], pts[3]);
+    const e1 = sub(pts[2], pts[1]);
+    const e3 = sub(pts[0], pts[3]);
+
+    if (!areParallelAndEqual(e0, e2)) {
+      return {
+        tileable: false,
+        reason: 'Los lados opuestos deben ser paralelos y de igual longitud',
+      };
+    }
+    if (!areParallelAndEqual(e1, e3)) {
+      return {
+        tileable: false,
+        reason: 'Los lados opuestos deben ser paralelos y de igual longitud',
+      };
+    }
+
+    const region = buildParallelogramRegion(pts);
+    return { tileable: true, region };
+  }
+
+  return {
+    tileable: false,
+    reason: 'Se requieren 3 (triángulo) o 4 (paralelogramo) puntos',
+  };
+}
+
+function buildParallelogramRegion(verts: Vec2[], isTriangle = false): FundamentalRegion {
+  // verts debe ser [v0, v1, v2, v3] en orden cíclico
+  const u = sub(verts[1], verts[0]);
+  const v = sub(verts[3], verts[0]);
+
+  // Emparejamientos: edge 0 ↔ edge 2, edge 1 ↔ edge 3
   const edges: EdgeDef[] = [
-    edgeDef(EDGE_TOP,    0, 1, EDGE_BOTTOM, { dx: 0, dy: h }),
-    edgeDef(EDGE_RIGHT,  1, 2, EDGE_LEFT,   { dx: -w, dy: 0 }),
-    edgeDef(EDGE_BOTTOM, 2, 3, EDGE_TOP,    { dx: 0, dy: -h }),
-    edgeDef(EDGE_LEFT,   3, 0, EDGE_RIGHT,  { dx: w, dy: 0 }),
+    { id: 'e0', start: 0, end: 1, pairId: 'e2' },
+    { id: 'e1', start: 1, end: 2, pairId: 'e3' },
+    { id: 'e2', start: 2, end: 3, pairId: 'e0' },
+    { id: 'e3', start: 3, end: 0, pairId: 'e1' },
   ];
 
-  return { vertices: [v0, v1, v2, v3], edges, u, v };
+  return { vertices: verts, edges, u, v, isTriangle };
 }
 
-function edgeDef(
-  id: EdgeId, s: number, e: number,
-  pairId: EdgeId, pairXform: Transform,
-): EdgeDef {
-  return { id, start: s, end: e, curve: curveLine(), pairId, pairTransform: pairXform };
-}
+// ─── Mutación de vértices (manteniendo paralelogramo) ─────────────
 
-// ─── Consultas ─────────────────────────────────────────────────────
-
-export function edgeEndpoints(reg: FundamentalRegion, idx: number): [Vec2, Vec2] {
-  const edge = reg.edges[idx];
-  return [reg.vertices[edge.start], reg.vertices[edge.end]];
-}
-
-export function edgePairIdx(reg: FundamentalRegion, idx: number): number {
-  const pairId = reg.edges[idx].pairId;
-  return reg.edges.findIndex(e => e.id === pairId);
-}
-
-// ─── Mutaciones guiadas ────────────────────────────────────────────
+const OPPOSITE_MAP: Record<number, number> = { 0: 2, 1: 3, 2: 0, 3: 1 };
 
 /**
- * Mueve un vértice de la región fundamental (por índice).
- * En modo p1 rectangular, el vértice opuesto se mueve en espejo
- * para mantener la estructura de paralelogramo.
+ * Mueve un vértice manteniendo la estructura de paralelogramo.
  */
-export function moveVertex(reg: FundamentalRegion, idx: number, delta: Vec2): void {
-  // Mapa de oposiciones: 0↔2, 1↔3
-  const opposite = [2, 3, 0, 1];
-  const oppIdx = opposite[idx];
+export function moveVertex(region: FundamentalRegion, idx: number, delta: Vec2): void {
+  const opp = OPPOSITE_MAP[idx];
+  if (opp === undefined) return;
 
-  // Mover el vértice
-  reg.vertices[idx] = add(reg.vertices[idx], delta);
-  // Mover el opuesto en espejo
-  reg.vertices[oppIdx] = sub(reg.vertices[oppIdx], delta);
+  region.vertices[idx] = add(region.vertices[idx], delta);
+  region.vertices[opp] = sub(region.vertices[opp], delta);
 
-  // Recalcular u y v desde los vértices
-  reg.u = sub(reg.vertices[1], reg.vertices[0]);
-  reg.v = sub(reg.vertices[3], reg.vertices[0]);
+  // Recalcular vectores de traslación
+  region.u = sub(region.vertices[1], region.vertices[0]);
+  region.v = sub(region.vertices[3], region.vertices[0]);
 }
 
-/**
- * Convierte un borde recto en una curva cuadrática con un punto
- * de control en la posición dada (coordenadas absolutas del viewport,
- * que convertimos a relativas al start del edge).
- */
-export function bendEdge(reg: FundamentalRegion, edgeIdx: number, absCp: Vec2): void {
-  const edge = reg.edges[edgeIdx];
-  const start = reg.vertices[edge.start];
-  const relCp = sub(absCp, start);
-  edge.curve = { type: 'quadratic', ctrl: [relCp] };
+// ─── Reset ────────────────────────────────────────────────────────
 
-  // Sincronizar el borde emparejado
-  syncPairedEdge(reg, edgeIdx);
-}
-
-/**
- * Mueve el punto de control de un borde curvo.
- */
-export function moveControlPoint(reg: FundamentalRegion, edgeIdx: number, absCp: Vec2): void {
-  const edge = reg.edges[edgeIdx];
-  if (edge.curve.type !== 'quadratic') return;
-
-  const start = reg.vertices[edge.start];
-  edge.curve = {
-    type: 'quadratic',
-    ctrl: [sub(absCp, start)],
-  };
-
-  syncPairedEdge(reg, edgeIdx);
-}
-
-// ─── Sincronización de emparejamientos ────────────────────────────
-
-/**
- * Copia la curva de `edgeIdx` a su borde emparejado,
- * aplicando la transformación inversa para mantener la consistencia
- * bajo el grupo.
- */
-function syncPairedEdge(reg: FundamentalRegion, edgeIdx: number): void {
-  const edge = reg.edges[edgeIdx];
-  const pairIdx = reg.edges.findIndex(e => e.id === edge.pairId);
-  if (pairIdx === -1 || pairIdx === edgeIdx) return;
-
-  const pairEdge = reg.edges[pairIdx];
-
-  if (edge.curve.type === 'line') {
-    pairEdge.curve = curveLine();
-    return;
-  }
-
-  // La curva del paired edge debe ser la misma que la nuestra,
-  // pero expresada en coordenadas relativas a SU start.
-  const ourStart = reg.vertices[edge.start];
-  const pairStart = reg.vertices[pairEdge.start];
-
-  // El punto de control absoluto
-  const absCp = add(ourStart, edge.curve.ctrl[0]);
-
-  // Expresado en relativas al start del paired edge
-  const relCp = sub(absCp, pairStart);
-
-  pairEdge.curve = { type: 'quadratic', ctrl: [relCp] };
-}
-
-/** Resetea la región a su forma rectangular original. */
-export function resetRegion(reg: FundamentalRegion): void {
-  const w = reg.u.x || 400;
-  const h = reg.v.y || 300;
-  const cx = (reg.vertices[0].x + reg.vertices[2].x) / 2;
-  const cy = (reg.vertices[0].y + reg.vertices[2].y) / 2;
-  const halfW = w / 2;
-  const halfH = h / 2;
-
-  reg.vertices[0] = vec2(cx - halfW, cy - halfH);
-  reg.vertices[1] = vec2(cx + halfW, cy - halfH);
-  reg.vertices[2] = vec2(cx + halfW, cy + halfH);
-  reg.vertices[3] = vec2(cx - halfW, cy + halfH);
-
-  for (const edge of reg.edges) {
-    edge.curve = curveLine();
-  }
+export function resetRegion(): void {
 }

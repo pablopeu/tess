@@ -1,37 +1,27 @@
 import {
-  type Vec2,
-  add, sub, vec2,
+  type Vec2, type FundamentalRegion,
+  sub, vec2, dist,
 } from './types';
 import {
-  createRectangularRegion,
-  moveVertex, bendEdge, moveControlPoint, resetRegion,
+  checkTileability,
+  moveVertex,
 } from './fundamental-region';
 import {
   type TilingData,
   generateP1Tiling, hitTest,
 } from './symmetry';
 
-// ─── Constantes de render ──────────────────────────────────────────
+// ─── Estados del editor ───────────────────────────────────────────
 
-const GRID_COLS = 5;
-const GRID_ROWS = 5;
-
-// ─── Estado del editor ─────────────────────────────────────────────
-
-interface DragInfo {
-  kind: 'vertex' | 'control';
-  sourceVertexIdx?: number;
-  sourceEdgeIdx?: number;
-  /** Offset de celda para normalizar coordenadas a la región fundamental. */
-  cellOffset: Vec2;
-  lastMouse: Vec2;
-}
+type Phase = 'building' | 'editing';
 
 interface EditorState {
-  region: ReturnType<typeof createRectangularRegion>;
+  phase: Phase;
+  points: Vec2[];              // puntos clickeados por el usuario
+  region: FundamentalRegion | null;
   tiling: TilingData;
-  dragging: DragInfo | null;
-  highlightedEdge: number | null;
+  dragging: { vertexIdx: number; lastMouse: Vec2 } | null;
+  tileabilityMsg: string;
 }
 
 // ─── Clase Editor ──────────────────────────────────────────────────
@@ -48,13 +38,13 @@ export class Editor {
     this.svg = svgElement;
 
     this.state = {
-      region: createRectangularRegion(),
-      tiling: { edges: [], vertices: [], controlPoints: [] },
+      phase: 'building',
+      points: [],
+      region: null,
+      tiling: { polygons: [], vertices: [] },
       dragging: null,
-      highlightedEdge: null,
+      tileabilityMsg: 'Haz clic para colocar el primer vértice',
     };
-
-    this.state.tiling = generateP1Tiling(this.state.region, GRID_COLS, GRID_ROWS);
 
     this.setupEventListeners();
     this.render();
@@ -63,21 +53,15 @@ export class Editor {
     this.resizeObserver.observe(this.svg);
   }
 
-  // ─── Sistema de coordenadas ──────────────────────────────────────
-  //
-  // La región fundamental vive en su propio espacio de coordenadas
-  // centrado en (0, 0). El tiling se genera en ese mismo espacio.
-  //
-  // Para mostrarlo, trasladamos todo al centro del SVG.
-  // El offset es simplemente (svgWidth/2, svgHeight/2).
+  // ─── Coordenadas ──────────────────────────────────────────────
 
-  private svgCenter(): Vec2 {
+  private center(): Vec2 {
     const r = this.svg.getBoundingClientRect();
     return vec2(r.width / 2, r.height / 2);
   }
 
-  /** Convierte coordenadas del puntero a espacio de región. */
-  private svgToRegion(clientX: number, clientY: number): Vec2 {
+  /** De coordenadas de página a coordenadas de región. */
+  private pageToRegion(clientX: number, clientY: number): Vec2 {
     const rect = this.svg.getBoundingClientRect();
     const pt = this.svg.createSVGPoint();
     pt.x = clientX - rect.left;
@@ -85,26 +69,21 @@ export class Editor {
     const ctm = this.svg.getScreenCTM();
     if (ctm) {
       const root = pt.matrixTransform(ctm.inverse());
-      const c = this.svgCenter();
+      const c = this.center();
       return vec2(root.x - c.x, root.y - c.y);
     }
     return vec2(pt.x, pt.y);
   }
 
-  /** Offset de celda para normalizar coordenadas a la región fundamental. */
-  private cellOffset(col: number, row: number): Vec2 {
-    const u = this.state.region.u;
-    const v = this.state.region.v;
-    return vec2(col * u.x + row * v.x, col * u.y + row * v.y);
-  }
-
-  // ─── Ciclo de render ─────────────────────────────────────────────
+  // ─── Render ───────────────────────────────────────────────────
 
   private scheduleRender(): void {
     if (this.rafId === null) {
       this.rafId = requestAnimationFrame(() => {
         this.rafId = null;
-        this.state.tiling = generateP1Tiling(this.state.region, GRID_COLS, GRID_ROWS);
+        if (this.state.region) {
+          this.state.tiling = generateP1Tiling(this.state.region);
+        }
         this.render();
       });
     }
@@ -112,141 +91,175 @@ export class Editor {
 
   private render(): void {
     while (this.svg.firstChild) this.svg.removeChild(this.svg.firstChild);
-
-    const tiling = this.state.tiling;
-    const c = this.svgCenter();
+    const c = this.center();
 
     const g = document.createElementNS(SVG_NS, 'g');
     g.setAttribute('transform', `translate(${c.x}, ${c.y})`);
     this.svg.appendChild(g);
 
-    // Bordes
-    for (const edge of tiling.edges) {
-      const path = document.createElementNS(SVG_NS, 'path');
-      path.setAttribute('d', edge.pathD);
-      path.dataset.edgeIdx = String(edge.sourceEdgeIdx);
-
-      if (this.state.highlightedEdge !== null && edge.sourceEdgeIdx === this.state.highlightedEdge) {
-        path.setAttribute('class', 'cell cell-pair-highlight');
+    // ── Teselación (si existe) ──
+    for (const poly of this.state.tiling.polygons) {
+      const el = document.createElementNS(SVG_NS, 'path');
+      el.setAttribute('d', poly.pathD);
+      if (poly.isPrimary) {
+        el.setAttribute('class', 'cell');
       } else {
-        path.setAttribute('class', 'cell');
+        // Triángulo reflejado: menos opaco
+        el.setAttribute('class', 'cell cell-mirror');
       }
-
-      g.appendChild(path);
+      g.appendChild(el);
     }
 
-    // Líneas de control (start → control point)
-    for (const cp of tiling.controlPoints) {
-      const edge = this.state.region.edges[cp.sourceEdgeIdx];
-      const start = add(
-        this.state.region.vertices[edge.start],
-        this.cellOffset(cp.cellCol, cp.cellRow),
-      );
-
-      const line = document.createElementNS(SVG_NS, 'line');
-      line.setAttribute('x1', String(start.x));
-      line.setAttribute('y1', String(start.y));
-      line.setAttribute('x2', String(cp.pos.x));
-      line.setAttribute('y2', String(cp.pos.y));
-      line.setAttribute('class', 'control-line');
-      g.appendChild(line);
-    }
-
-    // Puntos de control
-    for (const cp of tiling.controlPoints) {
-      const circle = document.createElementNS(SVG_NS, 'circle');
-      circle.setAttribute('cx', String(cp.pos.x));
-      circle.setAttribute('cy', String(cp.pos.y));
-      circle.setAttribute('r', '6');
-      circle.setAttribute('class', 'control-handle');
-      circle.dataset.edgeIdx = String(cp.sourceEdgeIdx);
-      g.appendChild(circle);
-    }
-
-    // Vértices
-    for (const v of tiling.vertices) {
+    // ── Vértices de la teselación ──
+    for (const v of this.state.tiling.vertices) {
       const circle = document.createElementNS(SVG_NS, 'circle');
       circle.setAttribute('cx', String(v.pos.x));
       circle.setAttribute('cy', String(v.pos.y));
       circle.setAttribute('r', '5');
-      circle.setAttribute('class', 'vertex-handle');
-      circle.dataset.vidx = String(v.sourceVertexIdx);
+      // Solo los de la celda central son interactuables
+      if (v.cellCol === 0 && v.cellRow === 0) {
+        circle.setAttribute('class', 'vertex-handle');
+        circle.dataset.vidx = String(v.sourceVertexIdx);
+      } else {
+        circle.setAttribute('class', 'vertex-inactive');
+      }
       g.appendChild(circle);
+    }
+
+    // ── Puntos en construcción (building phase) ──
+    if (this.state.phase === 'building') {
+      const pts = this.state.points;
+
+      // Líneas de construcción
+      for (let i = 0; i < pts.length; i++) {
+        const j = (i + 1) % pts.length;
+
+        const line = document.createElementNS(SVG_NS, 'line');
+        line.setAttribute('x1', String(pts[i].x));
+        line.setAttribute('y1', String(pts[i].y));
+        line.setAttribute('x2', String(pts[j].x));
+        line.setAttribute('y2', String(pts[j].y));
+        line.setAttribute('class', 'build-line');
+        g.appendChild(line);
+      }
+
+      // Círculos en cada punto
+      for (let i = 0; i < pts.length; i++) {
+        const circle = document.createElementNS(SVG_NS, 'circle');
+        circle.setAttribute('cx', String(pts[i].x));
+        circle.setAttribute('cy', String(pts[i].y));
+        circle.setAttribute('r', '6');
+        circle.setAttribute('class', pts.length >= 3 && i < 3 ? 'vertex-handle' : 'vertex-build');
+        g.appendChild(circle);
+      }
+
+      // Números de orden
+      for (let i = 0; i < pts.length; i++) {
+        const txt = document.createElementNS(SVG_NS, 'text');
+        txt.setAttribute('x', String(pts[i].x + 10));
+        txt.setAttribute('y', String(pts[i].y - 10));
+        txt.setAttribute('class', 'vertex-label');
+        txt.textContent = String(i + 1);
+        g.appendChild(txt);
+      }
+    }
+
+    // ── Estado ──
+    this.updateStatus();
+  }
+
+  private updateStatus(): void {
+    const el = document.getElementById('status');
+    if (!el) return;
+
+    if (this.state.phase === 'building') {
+      el.textContent = this.state.tileabilityMsg;
+    } else {
+      el.textContent = 'Arrastra los vértices para deformar la teselación';
     }
   }
 
-  // ─── Eventos ─────────────────────────────────────────────────────
+  // ─── Eventos ─────────────────────────────────────────────────
 
   private setupEventListeners(): void {
     this.svg.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
+    this.svg.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   private onPointerDown = (e: PointerEvent): void => {
+    if (e.button === 2) {
+      // Botón derecho → finalizar construcción
+      if (this.state.phase === 'building' && this.state.points.length >= 3) {
+        this.finalizeBuilding();
+      }
+      return;
+    }
     if (e.button !== 0) return;
-    const pos = this.svgToRegion(e.clientX, e.clientY);
-    const hit = hitTest(this.state.tiling, pos);
-    if (!hit) return;
 
-    if (hit.kind === 'vertex' && hit.sourceVertexIdx !== undefined) {
-      this.state.dragging = {
-        kind: 'vertex',
-        sourceVertexIdx: hit.sourceVertexIdx,
-        cellOffset: this.cellOffset(hit.cellCol, hit.cellRow),
-        lastMouse: pos,
-      };
-      e.preventDefault();
-    } else if (hit.kind === 'control' && hit.sourceEdgeIdx !== undefined) {
-      this.state.dragging = {
-        kind: 'control',
-        sourceEdgeIdx: hit.sourceEdgeIdx,
-        cellOffset: this.cellOffset(hit.cellCol, hit.cellRow),
-        lastMouse: pos,
-      };
-      e.preventDefault();
-    } else if (hit.kind === 'edge' && hit.sourceEdgeIdx !== undefined) {
-      const edge = this.state.region.edges[hit.sourceEdgeIdx];
-      if (edge.curve.type === 'line') {
-        // Normalizar a coordenadas de la celda fundamental
-        const offset = this.cellOffset(hit.cellCol, hit.cellRow);
-        const fundamentalPos = sub(pos, offset);
-        bendEdge(this.state.region, hit.sourceEdgeIdx, fundamentalPos);
-        this.scheduleRender();
+    const pos = this.pageToRegion(e.clientX, e.clientY);
+
+    if (this.state.phase === 'building') {
+      this.handleBuildClick(pos);
+      return;
+    }
+
+    // Editing: hit test para drag de vértice
+    if (this.state.region) {
+      const hit = hitTest(this.state.tiling, pos);
+      if (hit && hit.kind === 'vertex') {
+        this.state.dragging = { vertexIdx: hit.sourceVertexIdx, lastMouse: pos };
+        e.preventDefault();
       }
     }
   };
 
-  private onPointerMove = (e: PointerEvent): void => {
-    const pos = this.svgToRegion(e.clientX, e.clientY);
-    const drag = this.state.dragging;
+  private handleBuildClick(pos: Vec2): void {
+    const pts = this.state.points;
 
-    if (!drag) {
-      // Hover highlight
-      const hit = hitTest(this.state.tiling, pos);
-      let hl: number | null = null;
-      if (hit) {
-        if (hit.kind === 'edge') hl = hit.sourceEdgeIdx ?? null;
-        if (hit.kind === 'control') hl = hit.sourceEdgeIdx ?? null;
+    // Evitar puntos demasiado cercanos
+    if (pts.length > 0 && dist(pos, pts[pts.length - 1]) < 10) return;
+
+    pts.push(pos);
+
+    if (pts.length >= 3) {
+      const result = checkTileability(pts);
+      if (result.tileable && result.region) {
+        this.state.region = result.region;
+        this.state.tiling = generateP1Tiling(result.region);
+        this.state.tileabilityMsg = `¡Teselable! (${pts.length} vértices) — clic derecho para finalizar`;
+      } else {
+        this.state.tileabilityMsg = result.reason || 'No teselable';
       }
-      if (hl !== this.state.highlightedEdge) {
-        this.state.highlightedEdge = hl;
-        this.scheduleRender();
-      }
+    } else {
+      this.state.tileabilityMsg = `Punto ${pts.length} — sigue agregando vértices`;
+    }
+
+    this.scheduleRender();
+  }
+
+  private finalizeBuilding(): void {
+    if (!this.state.region) {
+      // Si no hay región teselable, no podemos finalizar
       return;
     }
+    this.state.phase = 'editing';
+    this.state.tileabilityMsg = '';
+    this.scheduleRender();
+  }
+
+  private onPointerMove = (e: PointerEvent): void => {
+    if (!this.state.dragging) return;
+    const pos = this.pageToRegion(e.clientX, e.clientY);
+    const drag = this.state.dragging;
+    const region = this.state.region;
+    if (!region) return;
 
     const delta = sub(pos, drag.lastMouse);
     if (Math.abs(delta.x) < 0.5 && Math.abs(delta.y) < 0.5) return;
 
-    if (drag.kind === 'vertex' && drag.sourceVertexIdx !== undefined) {
-      moveVertex(this.state.region, drag.sourceVertexIdx, delta);
-    } else if (drag.kind === 'control' && drag.sourceEdgeIdx !== undefined) {
-      // Normalizar la posición del ratón a la celda fundamental
-      const fundamentalPos = sub(pos, drag.cellOffset);
-      moveControlPoint(this.state.region, drag.sourceEdgeIdx, fundamentalPos);
-    }
-
+    moveVertex(region, drag.vertexIdx, delta);
     drag.lastMouse = pos;
     this.scheduleRender();
   };
@@ -255,11 +268,15 @@ export class Editor {
     this.state.dragging = null;
   };
 
-  // ─── API pública ─────────────────────────────────────────────────
+  // ─── API pública ─────────────────────────────────────────────
 
   reset(): void {
-    resetRegion(this.state.region);
-    this.state.highlightedEdge = null;
+    this.state.phase = 'building';
+    this.state.points = [];
+    this.state.region = null;
+    this.state.tiling = { polygons: [], vertices: [] };
+    this.state.dragging = null;
+    this.state.tileabilityMsg = 'Haz clic para colocar el primer vértice';
     this.scheduleRender();
   }
 

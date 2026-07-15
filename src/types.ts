@@ -31,110 +31,70 @@ export function lerp(a: Vec2, b: Vec2, t: number): Vec2 {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
-// ─── Curvas ─────────────────────────────────────────────────────────
-
-export type CurveType = 'line' | 'quadratic';
-
-/** Curva paramétrica que va de `start` a `end`. */
-export interface Curve {
-  readonly type: CurveType;
-  /** Puntos de control en coordenadas relativas al `start`.
-   *  - 'line':       []
-   *  - 'quadratic':  [cp]  */
-  readonly ctrl: readonly Vec2[];
+export function dot(a: Vec2, b: Vec2): number {
+  return a.x * b.x + a.y * b.y;
 }
 
-export function curveLine(): Curve {
-  return { type: 'line', ctrl: [] };
+export function cross2(a: Vec2, b: Vec2): number {
+  return a.x * b.y - a.y * b.x;
 }
 
-export function curveQuadratic(cp: Vec2): Curve {
-  return { type: 'quadratic', ctrl: [cp] };
+export function len(v: Vec2): number {
+  return Math.sqrt(v.x * v.x + v.y * v.y);
 }
 
-/** Evalúa un punto sobre la curva en t ∈ [0, 1] en coordenadas absolutas. */
-export function evalCurve(curve: Curve, start: Vec2, end: Vec2, t: number): Vec2 {
-  if (curve.type === 'line') {
-    return lerp(start, end, t);
-  }
-  // quadratic Bézier: B(t) = (1-t)²·P0 + 2(1-t)t·P1 + t²·P2
-  const cp = add(start, curve.ctrl[0]);
-  const s = 1 - t;
-  return {
-    x: s * s * start.x + 2 * s * t * cp.x + t * t * end.x,
-    y: s * s * start.y + 2 * s * t * cp.y + t * t * end.y,
-  };
+export function normalize(v: Vec2): Vec2 {
+  const l = len(v);
+  if (l === 0) return { x: 0, y: 0 };
+  return { x: v.x / l, y: v.y / l };
 }
 
-/** Genera el SVG path `d` para una curva. */
-export function curveToPath(curve: Curve, start: Vec2, end: Vec2): string {
-  const parts = [`M ${start.x} ${start.y}`];
-  if (curve.type === 'line') {
-    parts.push(`L ${end.x} ${end.y}`);
-  } else {
-    const cp = add(start, curve.ctrl[0]);
-    parts.push(`Q ${cp.x} ${cp.y} ${end.x} ${end.y}`);
-  }
-  return parts.join(' ');
+/** Distancia mínima de un punto a un segmento. */
+export function distToSegment(p: Vec2, a: Vec2, b: Vec2): number {
+  const ab = sub(b, a);
+  const abLen2 = dot(ab, ab);
+  if (abLen2 === 0) return dist(p, a);
+  let t = dot(sub(p, a), ab) / abLen2;
+  t = Math.max(0, Math.min(1, t));
+  const proj = add(a, scale(ab, t));
+  return dist(p, proj);
 }
 
-// ─── Transformaciones ──────────────────────────────────────────────
+// ─── Edge / transform ──────────────────────────────────────────────
+
+export type EdgeId = string;
+
+export interface EdgeDef {
+  readonly id: EdgeId;
+  start: number;
+  end: number;
+  pairId: EdgeId;
+}
 
 export interface Transform {
   readonly dx: number;
   readonly dy: number;
 }
 
-export function applyTransform(p: Vec2, t: Transform): Vec2 {
-  return { x: p.x + t.dx, y: p.y + t.dy };
-}
+// ─── Región fundamental ───────────────────────────────────────────
 
-export function composeTransforms(a: Transform, b: Transform): Transform {
-  return { dx: a.dx + b.dx, dy: a.dy + b.dy };
-}
-
-// ─── Región fundamental ────────────────────────────────────────────
-
-export type EdgeId = string;
-
-/**
- * Un borde de la región fundamental.
- * `start` y `end` son índices en `vertices[]` de la región.
- * `pairId` es el id del borde emparejado (el que debe deformarse
- * idénticamente bajo la transformación del grupo).
- */
-export interface EdgeDef {
-  readonly id: EdgeId;
-  start: number;
-  end: number;
-  curve: Curve;
-  /** Id del borde con el que compartimos forma. */
-  pairId: EdgeId;
-  /** Transformación que lleva nuestra `curve` a la `curve` del paired edge. */
-  pairTransform: Transform;
-}
-
-/**
- * Región fundamental de una teselación periódica.
- *
- * - `vertices` son los vértices del polígono fundamental.
- * - `edges` son los bordes, en orden de polilínea cerrada.
- * - Cada borde apunta a su `pairId` para que al deformarlo
- *   el borde emparejado se actualice automáticamente.
- * - `u` y `v` son los vectores de traslación del grupo p1.
- */
 export interface FundamentalRegion {
   vertices: Vec2[];
   edges: EdgeDef[];
-  /** Vector de traslación horizontal. */
+  /** Vector de traslación u (horizontal en modo p1). */
   u: Vec2;
-  /** Vector de traslación vertical. */
+  /** Vector de traslación v (vertical en modo p1). */
   v: Vec2;
+  /** true si la región se construyó desde un triángulo. */
+  isTriangle?: boolean;
 }
 
-// ─── Estados de interacción ────────────────────────────────────────
+// ─── Interacción ──────────────────────────────────────────────────
 
-export type DragTarget =
-  | { kind: 'vertex'; vertexIdx: number }
-  | { kind: 'control'; edgeIdx: number }
-  | { kind: 'edge-create'; edgeIdx: number; pos: Vec2 };
+export type EditorPhase = 'building' | 'editing';
+
+export interface DragState {
+  kind: 'vertex';
+  vertexIdx: number;
+  lastMouse: Vec2;
+}
