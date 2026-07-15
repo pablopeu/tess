@@ -30,9 +30,16 @@ interface EditorState {
   tileabilityMsg: string;
 }
 
-// ─── Clase Editor ──────────────────────────────────────────────────
+// ─── Constantes ───────────────────────────────────────────────────
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// ─── Helpers ──────────────────────────────────────────────────────
+
+/** D = B + C - A, el 4º vértice del paralelogramo */
+function parallelogramD(A: Vec2, B: Vec2, C: Vec2): Vec2 {
+  return { x: B.x + C.x - A.x, y: B.y + C.y - A.y };
+}
 
 export class Editor {
   private svg: SVGSVGElement;
@@ -81,20 +88,30 @@ export class Editor {
 
   private recheckTileability(): void {
     const pts = this.state.points;
-    if (pts.length >= 3) {
+    if (pts.length === 3) {
+      // Triángulo: siempre teselable
+      const result = checkTileability(pts);
+      if (result.region) {
+        this.state.region = result.region;
+        this.state.tiling = generateP1Tiling(result.region);
+        this.state.tileabilityMsg = 'Triángulo — clic para 4º vértice, o clic derecho para finalizar';
+      }
+    } else if (pts.length === 4) {
+      // Paralelogramo auto-completado: debería ser siempre válido
       const result = checkTileability(pts);
       if (result.tileable && result.region) {
         this.state.region = result.region;
         this.state.tiling = generateP1Tiling(result.region);
-        this.state.tileabilityMsg = `¡Teselable! (${pts.length} vértices) — clic derecho para finalizar`;
-        return;
+        this.state.tileabilityMsg = 'Paralelogramo — clic derecho para finalizar';
+      } else {
+        // No debería ocurrir nunca porque el 4º se auto-completa
+        this.state.region = null;
+        this.state.tiling = { polygons: [], vertices: [] };
+        this.state.tileabilityMsg = 'Error inesperado';
       }
-    }
-    // No tileable: limpiar región para no mostrar teselado viejo
-    this.state.region = null;
-    this.state.tiling = { polygons: [], vertices: [] };
-    if (pts.length >= 3) {
-      this.state.tileabilityMsg = 'No teselable — arrastra los puntos para ajustar';
+    } else {
+      this.state.region = null;
+      this.state.tiling = { polygons: [], vertices: [] };
     }
   }
 
@@ -120,7 +137,7 @@ export class Editor {
     g.setAttribute('transform', `translate(${c.x}, ${c.y})`);
     this.svg.appendChild(g);
 
-    // ── Teselación (solo si hay región válida) ──
+    // ── Teselación ──
     if (this.state.region) {
       for (const poly of this.state.tiling.polygons) {
         const el = document.createElementNS(SVG_NS, 'path');
@@ -129,23 +146,21 @@ export class Editor {
         g.appendChild(el);
       }
 
-      // Vértices de la teselación (solo celda central en editing)
-      if (this.state.phase === 'editing') {
-        for (const v of this.state.tiling.vertices) {
-          if (v.cellCol === 0 && v.cellRow === 0) {
-            const circle = document.createElementNS(SVG_NS, 'circle');
-            circle.setAttribute('cx', String(v.pos.x));
-            circle.setAttribute('cy', String(v.pos.y));
-            circle.setAttribute('r', '5');
-            circle.setAttribute('class', 'vertex-handle');
-            circle.dataset.vidx = String(v.sourceVertexIdx);
-            g.appendChild(circle);
-          }
+      // Vértices de la teselación
+      for (const v of this.state.tiling.vertices) {
+        if (v.cellCol === 0 && v.cellRow === 0) {
+          const circle = document.createElementNS(SVG_NS, 'circle');
+          circle.setAttribute('cx', String(v.pos.x));
+          circle.setAttribute('cy', String(v.pos.y));
+          circle.setAttribute('r', '5');
+          circle.setAttribute('class', 'vertex-handle');
+          circle.dataset.vidx = String(v.sourceVertexIdx);
+          g.appendChild(circle);
         }
       }
     }
 
-    // ── Puntos en construcción (siempre en building) ──
+    // ── Puntos en construcción ──
     if (this.state.phase === 'building' && this.state.points.length > 0) {
       const pts = this.state.points;
       const tileable = this.state.region !== null;
@@ -162,7 +177,7 @@ export class Editor {
         g.appendChild(line);
       }
 
-      // Círculos en cada punto (todos arrastrables)
+      // Círculos en cada punto
       for (let i = 0; i < pts.length; i++) {
         const circle = document.createElementNS(SVG_NS, 'circle');
         circle.setAttribute('cx', String(pts[i].x));
@@ -223,19 +238,17 @@ export class Editor {
     const pos = this.pageToRegion(e.clientX, e.clientY);
 
     if (this.state.phase === 'building') {
-      // Intentar arrastrar un punto existente
       const hitIdx = this.hitBuildPoint(pos);
       if (hitIdx !== null) {
         this.state.dragging = { kind: 'building-point', idx: hitIdx, lastMouse: pos };
         e.preventDefault();
         return;
       }
-      // Si no, agregar un nuevo punto
       this.handleBuildClick(pos);
       return;
     }
 
-    // Editing: arrastrar vértice de la teselación
+    // Editing
     if (this.state.region) {
       const hit = hitTest(this.state.tiling, pos);
       if (hit && hit.kind === 'vertex') {
@@ -250,7 +263,20 @@ export class Editor {
 
     if (pts.length > 0 && dist(pos, pts[pts.length - 1]) < 10) return;
 
-    pts.push(pos);
+    if (pts.length === 3) {
+      // 4º clic → auto-completar paralelogramo D = B + C - A
+      const A = pts[0];
+      const B = pts[1];
+      const C = pts[2];
+      const D = parallelogramD(A, B, C);
+      pts.push(D);
+    } else if (pts.length >= 4) {
+      // No se aceptan más de 4 puntos
+      return;
+    } else {
+      pts.push(pos);
+    }
+
     this.recheckTileability();
     this.scheduleRender();
   }
@@ -271,9 +297,7 @@ export class Editor {
     if (Math.abs(delta.x) < 0.5 && Math.abs(delta.y) < 0.5) return;
 
     if (drag.kind === 'building-point') {
-      // Arrastrar un punto en construcción
-      this.state.points[drag.idx] = pos;
-      this.recheckTileability();
+      this.dragBuildPoint(drag.idx, pos, delta);
       drag.lastMouse = pos;
       this.scheduleRender();
     } else if (drag.kind === 'tile-vertex' && this.state.region) {
@@ -282,6 +306,33 @@ export class Editor {
       this.scheduleRender();
     }
   };
+
+  /**
+   * Arrastrar un punto en construcción.
+   * Con ≤3 puntos: arrastre libre, se re-evalúa teselabilidad.
+   * Con 4 puntos: el paralelogramo se mantiene usando moveVertex.
+   */
+  private dragBuildPoint(idx: number, pos: Vec2, delta: Vec2): void {
+    const pts = this.state.points;
+
+    if (pts.length <= 3) {
+      pts[idx] = pos;
+      this.recheckTileability();
+      return;
+    }
+
+    // 4 puntos: mantener paralelogramo via moveVertex
+    // pts = [A, B, D, C] mismo orden que region.vertices
+    if (this.state.region) {
+      moveVertex(this.state.region, idx, delta);
+      // Sincronizar building points desde región actualizada
+      const v = this.state.region.vertices;
+      pts[0] = v[0];
+      pts[1] = v[1];
+      pts[2] = v[2];
+      pts[3] = v[3];
+    }
+  }
 
   private onPointerUp = (): void => {
     this.state.dragging = null;
