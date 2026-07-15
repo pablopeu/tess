@@ -1,0 +1,131 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  user-select: none;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+#toolbar button {
+  background: #0f3460;
+  color: #e0e0e0;
+  border: 1px solid #1a5276;
+  padding: 0.3rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+#toolbar button:hover {
+  background: #1a5276;
+}
+
+#mode-label {
+  font-size: 0.85rem;
+  color: #7ec8e3;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+#status {
+  font-size: 0.8rem;
+  color: #888;
+  margin-left: auto;
+}
+
+#viewport-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+#viewport {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+
+#viewport:active {
+  cursor: grabbing;
+}
+
+#viewport .cell {
+  fill: transparent;
+  stroke: #4a6fa5;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 0.15s, stroke-width 0.15s;
+}
+
+#viewport .cell:hover {
+  stroke: #7ec8e3;
+}
+
+#viewport .cell-pair-highlight {
+  stroke: #e94560;
+  stroke-width: 2.5;
+}
+
+#viewport .vertex-handle {
+  fill: #e94560;
+  cursor: move;
+  transition: r 0.1s;
+}
+
+#viewport .vertex-handle:hover {
+  r: 7;
+}
+
+#viewport .control-handle {
+  fill: #f5a623;
+  cursor: move;
+}
+
+#viewport .control-line {
+  stroke: #f5a623;
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+#hint {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.8rem;
+  color: #666;
+  pointer-events: none;
+  background: rgba(22, 33, 62, 0.8);
+  padding: 0.3rem 0.8rem;
+  border-radius: 4px;
+}
