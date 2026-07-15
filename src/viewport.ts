@@ -146,16 +146,18 @@ export class Editor {
         g.appendChild(el);
       }
 
-      // Vértices de la teselación
-      for (const v of this.state.tiling.vertices) {
-        if (v.cellCol === 0 && v.cellRow === 0) {
-          const circle = document.createElementNS(SVG_NS, 'circle');
-          circle.setAttribute('cx', String(v.pos.x));
-          circle.setAttribute('cy', String(v.pos.y));
-          circle.setAttribute('r', '5');
-          circle.setAttribute('class', 'vertex-handle');
-          circle.dataset.vidx = String(v.sourceVertexIdx);
-          g.appendChild(circle);
+      // Vértices de la teselación (solo en editing, y solo celda central)
+      if (this.state.phase === 'editing') {
+        for (const v of this.state.tiling.vertices) {
+          if (v.cellCol === 0 && v.cellRow === 0) {
+            const circle = document.createElementNS(SVG_NS, 'circle');
+            circle.setAttribute('cx', String(v.pos.x));
+            circle.setAttribute('cy', String(v.pos.y));
+            circle.setAttribute('r', '5');
+            circle.setAttribute('class', 'vertex-handle');
+            circle.dataset.vidx = String(v.sourceVertexIdx);
+            g.appendChild(circle);
+          }
         }
       }
     }
@@ -165,19 +167,22 @@ export class Editor {
       const pts = this.state.points;
       const tileable = this.state.region !== null;
 
-      // Líneas de construcción
-      for (let i = 0; i < pts.length; i++) {
-        const j = (i + 1) % pts.length;
-        const line = document.createElementNS(SVG_NS, 'line');
-        line.setAttribute('x1', String(pts[i].x));
-        line.setAttribute('y1', String(pts[i].y));
-        line.setAttribute('x2', String(pts[j].x));
-        line.setAttribute('y2', String(pts[j].y));
-        line.setAttribute('class', tileable ? 'build-line' : 'build-line build-line-invalid');
-        g.appendChild(line);
+      // Líneas de construcción: solo cuando NO hay teselación
+      // (cuando hay teselación, los bordes ya se ven en los polígonos)
+      if (!tileable) {
+        for (let i = 0; i < pts.length; i++) {
+          const j = (i + 1) % pts.length;
+          const line = document.createElementNS(SVG_NS, 'line');
+          line.setAttribute('x1', String(pts[i].x));
+          line.setAttribute('y1', String(pts[i].y));
+          line.setAttribute('x2', String(pts[j].x));
+          line.setAttribute('y2', String(pts[j].y));
+          line.setAttribute('class', 'build-line build-line-invalid');
+          g.appendChild(line);
+        }
       }
 
-      // Círculos en cada punto
+      // Círculos arrastrables en cada punto (siempre)
       for (let i = 0; i < pts.length; i++) {
         const circle = document.createElementNS(SVG_NS, 'circle');
         circle.setAttribute('cx', String(pts[i].x));
@@ -264,14 +269,14 @@ export class Editor {
     if (pts.length > 0 && dist(pos, pts[pts.length - 1]) < 10) return;
 
     if (pts.length === 3) {
-      // 4º clic → auto-completar paralelogramo D = B + C - A
+      // 4º clic: usar la posición clickeada como 3er vértice
+      // y completar el paralelogramo. pts = [A, B, C_antiguo]
+      // Reemplazamos C_antiguo por el click y calculamos D.
       const A = pts[0];
       const B = pts[1];
-      const C = pts[2];
-      const D = parallelogramD(A, B, C);
-      pts.push(D);
+      pts[2] = pos;           // C = posición del click
+      pts.push(parallelogramD(A, B, pos));  // D = B + C - A
     } else if (pts.length >= 4) {
-      // No se aceptan más de 4 puntos
       return;
     } else {
       pts.push(pos);
