@@ -2,22 +2,19 @@ import {
   type Vec2, type FundamentalRegion,
   add, vec2,
 } from './types';
+import { getPolygonPoints } from './fundamental-region';
 
 // ─── Datos de teselación ──────────────────────────────────────────
 
 export interface TiledPolygon {
-  /** SVG path `d` para este polígono. */
   pathD: string;
-  /** true si es uno de los triángulos del usuario (modo triángulo). */
   isPrimary: boolean;
-  /** Origen de celda (para normalizar coordenadas en interacción). */
   cellCol: number;
   cellRow: number;
 }
 
 export interface TiledVertex {
   pos: Vec2;
-  /** Índice en la región fundamental. */
   sourceVertexIdx: number;
   cellCol: number;
   cellRow: number;
@@ -33,13 +30,11 @@ export interface TilingData {
 const GRID = 5;
 
 /**
- * Genera una teselación del plano aplicando el grupo p1 (traslaciones
- * puras) a la región fundamental.
+ * Genera una teselación p1 a partir de la región fundamental.
  *
- * Si la región proviene de un triángulo (isTriangle), renderiza dos
- * triángulos por celda: el original (vértices 0,1,3 del paralelogramo)
- * y su reflejo (vértices 1,2,3).
- * Si no, renderiza el paralelogramo completo.
+ * Para cada celda, construye el polígono recorriendo los 4 bordes
+ * de la región fundamental, incluyendo los puntos de segmento
+ * de cada borde. Todos los vértices se trasladan por i*u + j*v.
  */
 export function generateP1Tiling(region: FundamentalRegion): TilingData {
   const polygons: TiledPolygon[] = [];
@@ -51,10 +46,9 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
   const startRow = -half;
   const endRow = startRow + GRID;
 
+  // Obtener los puntos del polígono base (con segmentos)
+  const basePts = getPolygonPoints(region);
   const v = region.vertices;
-  const triVerts = region.isTriangle
-    ? [v[0], v[1], v[2]]
-    : null;
 
   for (let row = startRow; row < endRow; row++) {
     for (let col = startCol; col < endCol; col++) {
@@ -63,11 +57,12 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
         col * region.u.y + row * region.v.y,
       );
 
-      if (triVerts) {
-        const A = add(triVerts[0], offset);
-        const B = add(triVerts[1], offset);
-        const C = add(triVerts[2], offset);
-        const D = add(v[3], offset); // D = A + C - B
+      if (region.isTriangle) {
+        // Triángulo: renderizar dos triángulos por celda
+        const A = add(v[0], offset);
+        const B = add(v[1], offset);
+        const C = add(v[2], offset);
+        const D = add(v[3], offset);
 
         // Triángulo primario A→B→C
         polygons.push({
@@ -85,6 +80,7 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
           cellRow: row,
         });
 
+        // Solo los 4 vértices base para interacción (triangle, no segments)
         vertices.push(
           { pos: A, sourceVertexIdx: 0, cellCol: col, cellRow: row },
           { pos: B, sourceVertexIdx: 1, cellCol: col, cellRow: row },
@@ -92,9 +88,9 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
           { pos: D, sourceVertexIdx: 3, cellCol: col, cellRow: row },
         );
       } else {
-        // Modo paralelogramo
-        const verts = region.vertices.map(p => add(p, offset));
-        const d = verts.map(p => `${p.x} ${p.y}`).join(' L ');
+        // Paralelogramo con segmentos: renderizar el polígono completo
+        const cellPts = basePts.map(p => add(p, offset));
+        const d = cellPts.map(p => `${p.x} ${p.y}`).join(' L ');
         polygons.push({
           pathD: `M ${d} Z`,
           isPrimary: true,
@@ -102,9 +98,9 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
           cellRow: row,
         });
 
-        for (let vi = 0; vi < verts.length; vi++) {
+        for (let vi = 0; vi < basePts.length; vi++) {
           vertices.push({
-            pos: verts[vi],
+            pos: cellPts[vi],
             sourceVertexIdx: vi,
             cellCol: col,
             cellRow: row,
@@ -122,21 +118,12 @@ export function generateP1Tiling(region: FundamentalRegion): TilingData {
 const HIT_RADIUS = 14;
 
 export interface HitResult {
-  kind: 'vertex' | 'polygon';
+  kind: 'vertex';
   sourceVertexIdx: number;
   pos: Vec2;
 }
 
-/**
- * Encuentra a qué elemento de la teselación corresponde un punto
- * (en coordenadas de región, NO de pantalla).
- *
- * Normaliza las coordenadas a la celda fundamental antes de buscar.
- */
 export function hitTest(tiling: TilingData, point: Vec2): HitResult | null {
-  // 1) Buscar el vértice más cercano (en cualquier celda).
-  //    Normalizamos a coordenadas de la región fundamental restando
-  //    el offset de celda.
   let best: HitResult | null = null;
   let bestDist = HIT_RADIUS;
 
@@ -152,8 +139,6 @@ export function hitTest(tiling: TilingData, point: Vec2): HitResult | null {
     }
   }
 
-  // Si no hay hit, ver si estamos dentro de algún polígono (para crear un punto)
-  // Por ahora devolvemos null si no encontramos un vértice.
   return best;
 }
 
