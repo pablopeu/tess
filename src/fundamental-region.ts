@@ -82,15 +82,21 @@ export function findNearestEdge(verts: Vec2[], pos: Vec2, threshold = 30): EdgeH
  * Subdivide un borde de la región y su opuesto, manteniendo u, v intactos.
  * Modifica region.vertices y region.edges in-place.
  */
-export function subdivideRegionEdge(region: FundamentalRegion, edgeIdx: number, t: number, pos: Vec2): void {
+export function subdivideRegionEdge(region: FundamentalRegion, edgeIdx: number, t: number): void {
   const verts = region.vertices;
   const n = verts.length;
   const halfN = n / 2;
   const oppEdgeIdx = (edgeIdx + halfN) % n;
 
-  // Crear vértices nuevos
-  const newV1 = pos;
+  // Proyectar pos sobre el segmento del borde (el clic puede estar cerca pero no exactamente sobre él)
+  const edgeA = verts[edgeIdx];
+  const edgeB = verts[(edgeIdx + 1) % n];
+  const newV1 = {
+    x: edgeA.x + (edgeB.x - edgeA.x) * t,
+    y: edgeA.y + (edgeB.y - edgeA.y) * t,
+  };
 
+  // Vértice opuesto en la misma fracción t
   const oppA = verts[oppEdgeIdx];
   const oppB = verts[(oppEdgeIdx + 1) % n];
   const newV2 = {
@@ -98,7 +104,7 @@ export function subdivideRegionEdge(region: FundamentalRegion, edgeIdx: number, 
     y: oppA.y + (oppB.y - oppA.y) * t,
   };
 
-  // Insertar del más grande al más chico
+  // Insertar del más grande al más chico para no desplazar índices
   if (edgeIdx > oppEdgeIdx) {
     region.vertices.splice(edgeIdx + 1, 0, newV1);
     region.vertices.splice(oppEdgeIdx + 1, 0, newV2);

@@ -255,7 +255,7 @@ export class Editor {
         return;
       }
       // Subdividir directamente sobre la región (u, v se mantienen)
-      subdivideRegionEdge(this.state.region, hit.edgeIdx, hit.t, pos);
+      subdivideRegionEdge(this.state.region, hit.edgeIdx, hit.t);
       this.syncPointsFromRegion();
       this.rebuildTiling();
       this.tileMsg();
