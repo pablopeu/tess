@@ -105,8 +105,10 @@ export function subdivideEdge(region: FundamentalRegion, edgeIdx: number, t: num
   e.segments.push({ t, offset: { x: 0, y: 0 } });
   e.segments.sort((a, b) => a.t - b.t);
 
+  // Paired edge is traversed in opposite direction, so use 1-t
   const pairEdge = edges.find(ed => ed.id === e.pairId)!;
-  pairEdge.segments.push({ t, offset: { x: 0, y: 0 } });
+  const pairT = 1 - t;
+  pairEdge.segments.push({ t: pairT, offset: { x: 0, y: 0 } });
   pairEdge.segments.sort((a, b) => a.t - b.t);
 }
 
@@ -150,10 +152,12 @@ export function moveSegmentPoint(region: FundamentalRegion, pidx: number, delta:
       const segIdx = pidx - runningIdx;
       const seg = e.segments[segIdx];
       seg.offset = { x: seg.offset.x + delta.x, y: seg.offset.y + delta.y };
-      // Sync with paired edge
+      // Sync with paired edge: the segments are sorted in opposite order
+      // because paired edge uses 1-t, so segIdx ↔ (numSegs - 1 - segIdx)
       const pairEdge = edges.find(ed => ed.id === e.pairId)!;
-      if (segIdx < pairEdge.segments.length) {
-        const pairSeg = pairEdge.segments[segIdx];
+      const pairSegIdx = pairEdge.segments.length - 1 - segIdx;
+      if (pairSegIdx >= 0 && pairSegIdx < pairEdge.segments.length) {
+        const pairSeg = pairEdge.segments[pairSegIdx];
         pairSeg.offset = { x: pairSeg.offset.x + delta.x, y: pairSeg.offset.y + delta.y };
       }
       return;
